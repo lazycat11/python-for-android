@@ -11,12 +11,25 @@ class VoskRecipe(PythonRecipe):
     url = "https://github.com/alphacep/vosk-api/archive/refs/tags/v{version}.tar.gz"
     site_packages_name = "vosk"
     depends = ["cffi"]
-    python_depends = ["requests", "tqdm", "srt", "websockets"]
+    python_depends = [
+        "requests",
+        "urllib3",
+        "certifi",
+        "charset-normalizer",
+        "idna",
+        "tqdm",
+        "srt",
+        "websockets",
+    ]
     hostpython_prerequisites = [
         "setuptools",
         "wheel",
         "cffi",
         "requests",
+        "urllib3",
+        "certifi",
+        "charset-normalizer",
+        "idna",
         "tqdm",
         "srt",
         "websockets",
