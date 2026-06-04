@@ -9,7 +9,7 @@
  export CROSSTOOL_PYTHON_INCLUDE_PATH=${PYTHON_INCLUDE}
  
  # Fix container image for cross build.
-@@ -58,7 +58,7 @@
+@@ -58,10 +58,26 @@
     "${TENSORFLOW_LITE_DIR}/python/metrics/metrics_portable.py" \
     "${BUILD_DIR}/tflite_runtime"
  echo "__version__ = '${PACKAGE_VERSION}'" >> "${BUILD_DIR}/tflite_runtime/__init__.py"
@@ -18,7 +18,26 @@
  
  # Build python interpreter_wrapper.
  mkdir -p "${BUILD_DIR}/cmake_build"
-@@ -111,6 +111,19 @@
+ cd "${BUILD_DIR}/cmake_build"
++P4A_TFLITE_CMAKE_CACHE_ENTRIES="
++  FP16 FP16-download FP16-source
++  FXdiv FXdiv-download FXdiv-source
++  abseil-cpp cpuinfo clog eigen farmhash fft2d
++  flatbuffers flatbuffers-flatc gemmlowp neon2sse
++  psimd psimd-download psimd-source
++  pthreadpool pthreadpool-download pthreadpool-source
++  ruy xnnpack
++"
++if [ -n "${P4A_TFLITE_CMAKE_CACHE_DIR}" ] && [ -d "${P4A_TFLITE_CMAKE_CACHE_DIR}" ]; then
++  for cache_entry in ${P4A_TFLITE_CMAKE_CACHE_ENTRIES}; do
++    if [ -e "${P4A_TFLITE_CMAKE_CACHE_DIR}/${cache_entry}" ] && [ ! -e "${cache_entry}" ]; then
++      cp -a "${P4A_TFLITE_CMAKE_CACHE_DIR}/${cache_entry}" .
++    fi
++  done
++fi
+ 
+ echo "Building for ${TENSORFLOW_TARGET}"
+@@ -111,6 +127,19 @@
        -DCMAKE_CXX_FLAGS="${BUILD_FLAGS}" \
        "${TENSORFLOW_LITE_DIR}"
      ;;
@@ -33,12 +52,12 @@
 +      -DCMAKE_TOOLCHAIN_FILE="${CMAKE_TOOLCHAIN_FILE}" \
 +      -DANDROID_PLATFORM="${ANDROID_PLATFORM}" \
 +      -DANDROID_ABI="${ANDROID_ABI}" \
-+      "${TENSORFLOW_LITE_DIR}" 
++      "${TENSORFLOW_LITE_DIR}"
 +    ;;
    *)
      BUILD_FLAGS=${BUILD_FLAGS:-"-I${PYTHON_INCLUDE} -I${PYBIND11_INCLUDE}"}
      cmake \
-@@ -162,7 +175,7 @@
+@@ -162,7 +191,7 @@
        ${PYTHON} setup.py bdist --plat-name=${WHEEL_PLATFORM_NAME} \
                           bdist_wheel --plat-name=${WHEEL_PLATFORM_NAME}
      else
@@ -47,3 +66,19 @@
      fi
      ;;
  esac
+@@ -171,6 +200,15 @@
+ echo "Output can be found here:"
+ find "${BUILD_DIR}/dist"
+ 
++if [ -n "${P4A_TFLITE_CMAKE_CACHE_DIR}" ]; then
++  mkdir -p "${P4A_TFLITE_CMAKE_CACHE_DIR}"
++  for cache_entry in ${P4A_TFLITE_CMAKE_CACHE_ENTRIES}; do
++    if [ -e "${cache_entry}" ]; then
++      cp -a "${cache_entry}" "${P4A_TFLITE_CMAKE_CACHE_DIR}/"
++    fi
++  done
++fi
++
+ # Build debian package.
+ if [[ "${BUILD_DEB}" != "y" ]]; then
+   exit 0

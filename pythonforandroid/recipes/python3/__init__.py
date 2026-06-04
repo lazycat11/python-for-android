@@ -54,9 +54,12 @@ class Python3Recipe(TargetPythonRecipe):
         :class:`~pythonforandroid.python.GuestPythonRecipe`
     '''
 
-    version = '3.14.2'
+    version = '3.11.9'
     url = 'https://github.com/python/cpython/archive/refs/tags/v{version}.tar.gz'
     name = 'python3'
+
+    def get_dir_name(self):
+        return '-'.join([self.name, self.version] + self.check_recipe_choices())
 
     patches = [
         'patches/pyconfig_detection.patch',

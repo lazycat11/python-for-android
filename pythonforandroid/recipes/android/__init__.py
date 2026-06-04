@@ -2,7 +2,7 @@ from pythonforandroid.recipe import PyProjectRecipe, IncludedFilesBehaviour
 from pythonforandroid.util import current_directory
 from pythonforandroid import logger
 
-from os.path import join
+from os.path import exists, join
 
 
 class AndroidRecipe(IncludedFilesBehaviour, PyProjectRecipe):
@@ -20,6 +20,16 @@ class AndroidRecipe(IncludedFilesBehaviour, PyProjectRecipe):
     def get_recipe_env(self, arch, **kwargs):
         env = super().get_recipe_env(arch, **kwargs)
         env.update(self.config_env)
+
+        generic_main_libs = (
+            join(self.ctx.bootstrap.build_dir, 'libs', arch.arch,
+                 f'libmain_{arch.arch}.so'),
+            join(self.ctx.bootstrap.build_dir, 'obj', 'local', arch.arch,
+                 f'libmain_{arch.arch}.so'),
+        )
+        if any(exists(lib) for lib in generic_main_libs):
+            env['ANDROID_MAIN_LIB'] = f'main_{arch.arch}'
+
         return env
 
     def prebuild_arch(self, arch):
@@ -50,8 +60,9 @@ class AndroidRecipe(IncludedFilesBehaviour, PyProjectRecipe):
             'IS_SDL2': int(bootstrap_name == "sdl2"),
             'IS_SDL3': int(bootstrap_name == "sdl3"),
             'PY2': 0,
-            'ANDROID_LIBS_DIR': "{}:{}".format(
+            'ANDROID_LIBS_DIR': "{}:{}:{}".format(
                 self.ctx.get_libs_dir(arch.arch),
+                join(self.ctx.bootstrap.build_dir, 'libs', arch.arch),
                 join(self.ctx.bootstrap.build_dir, 'obj', 'local', arch.arch)
             ),
             'JAVA_NAMESPACE': java_ns,

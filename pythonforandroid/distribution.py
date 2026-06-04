@@ -92,6 +92,7 @@ class Distribution:
         '''
 
         possible_dists = Distribution.get_distributions(ctx)
+        requested_recipes = {recipe.lower() for recipe in recipes}
         debug(f"All possible dists: {possible_dists}")
 
         # Will hold dists that would be built in the same folder as an existing dist
@@ -115,6 +116,7 @@ class Distribution:
         # 1) Check if any existing dists meet the requirements
         _possible_dists = []
         for dist in possible_dists:
+            dist_recipes = {recipe.lower() for recipe in dist.recipes}
             if (
                 ndk_api is not None and dist.ndk_api != ndk_api
             ) or dist.ndk_api is None:
@@ -123,7 +125,7 @@ class Distribution:
                 )
                 continue
             for recipe in recipes:
-                if recipe not in dist.recipes:
+                if recipe.lower() not in dist_recipes:
                     debug(f"dist {dist} missing recipe {recipe}")
                     break
             else:
@@ -149,8 +151,9 @@ class Distribution:
             if not all(arch_name in dist.archs for arch_name in archs):
                 debug("Skipping dist due to arch mismatch")
                 continue
-            if (set(dist.recipes) == set(recipes) or
-                (set(recipes).issubset(set(dist.recipes)) and
+            dist_recipes = {recipe.lower() for recipe in dist.recipes}
+            if (dist_recipes == requested_recipes or
+                (requested_recipes.issubset(dist_recipes) and
                  not require_perfect_match)):
                 info_notify('{} has compatible recipes, using this one'
                             .format(dist.name))

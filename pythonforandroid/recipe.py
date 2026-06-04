@@ -2,7 +2,7 @@ from os.path import basename, dirname, exists, isdir, isfile, join, realpath, sp
 import glob
 import hashlib
 import json
-from re import match
+from re import match, sub
 
 import sh
 import subprocess
@@ -257,26 +257,83 @@ class Recipe(metaclass=RecipeMeta):
                 break
             return target
         elif parsed_url.scheme in ('git', 'git+file', 'git+ssh', 'git+http', 'git+https'):
+            if url.startswith('git+'):
+                url = url[4:]
+
+            cache_dir = self.get_git_cache_dir(url, self.name)
+
+            def refresh_git_cache():
+                self.refresh_git_cache(url, cache_dir)
+
+            attempts = 0
+            seconds = 1
+            while True:
+                try:
+                    refresh_git_cache()
+                    break
+                except Exception as e:
+                    attempts += 1
+                    if attempts >= 5:
+                        raise
+                    stdout.write('Git cache refresh failed: {}; retrying in {} second(s)...\n'.format(e, seconds))
+                    time.sleep(seconds)
+                    seconds *= 2
+
+            cache_url = 'file://{}'.format(cache_dir)
             if not isdir(target):
-                if url.startswith('git+'):
-                    url = url[4:]
-                # if 'version' is specified, do a shallow clone
-                if self.version:
-                    ensure_dir(target)
-                    with current_directory(target):
-                        shprint(sh.git, 'init')
-                        shprint(sh.git, 'remote', 'add', 'origin', url)
-                else:
-                    shprint(sh.git, 'clone', '--recursive', url, target)
+                shprint(
+                    sh.git, '-c', 'protocol.file.allow=always',
+                    'clone', '--depth', '1', cache_url, target)
             with current_directory(target):
+                shprint(sh.git, 'remote', 'set-url', 'origin', url)
                 if self.version:
-                    shprint(sh.git, 'fetch', '--tags', '--depth', '1')
-                    shprint(sh.git, 'checkout', self.version)
+                    _retry = 10
+                    last_error = None
+                    while _retry:
+                        try:
+                            try:
+                                shprint(
+                                    sh.git, '-c', 'protocol.file.allow=always',
+                                    'fetch', '--depth', '1', cache_url,
+                                    'tag', self.version)
+                            except Exception:
+                                shprint(
+                                    sh.git, '-c', 'protocol.file.allow=always',
+                                    'fetch', '--depth', '1', cache_url,
+                                    self.version)
+                            shprint(sh.git, 'checkout', self.version)
+                        except Exception as e:
+                            last_error = e
+                            stdout.write('git fetch failed: retrying at {} times\n'.format(11 - _retry))
+                            _retry -= 1
+                        else:
+                            break
+                    else:
+                        raise last_error
                 branch = sh.git('branch', '--show-current')
                 if branch:
-                    shprint(sh.git, 'pull')
-                    shprint(sh.git, 'pull', '--recurse-submodules')
-                shprint(sh.git, 'submodule', 'update', '--recursive', '--init', '--depth', '1')
+                    branch = branch.strip()
+                    try:
+                        shprint(
+                            sh.git, '-c', 'protocol.file.allow=always',
+                            'pull', '--ff-only', cache_url, branch)
+                        shprint(
+                            sh.git, '-c', 'protocol.file.allow=always',
+                            'pull', '--ff-only', '--recurse-submodules',
+                            cache_url, branch)
+                    except Exception:
+                        warning(
+                            'Unable to refresh git checkout {} from cache {}; '
+                            'using existing checkout'.format(target, cache_url))
+                self.cache_git_submodules()
+                shprint(
+                    sh.git, '-c', 'protocol.file.allow=always',
+                    'submodule', 'update', '--recursive', '--init',
+                    '--depth', '1')
+            if not isdir(target):
+                raise Exception(
+                    'Git download did not create expected directory: {}'
+                    .format(target))
             return target
 
     def apply_patch(self, filename, arch, build_dir=None):
@@ -380,6 +437,160 @@ class Recipe(metaclass=RecipeMeta):
                 return local_recipe_dir
         return join(self.ctx.root_dir, 'recipes', self.name)
 
+    def get_download_cache_dir(self):
+        """
+        Returns the persistent download cache directory.
+        """
+        return environ.get(
+            'P4A_DOWNLOAD_CACHE_DIR',
+            environ.get('P4A_PACKAGE_CACHE_DIR', '/home/mingyue/packages'))
+
+    def get_git_cache_root(self):
+        """
+        Returns the persistent git source cache directory.
+        """
+        return environ.get(
+            'P4A_GIT_CACHE_DIR',
+            join(self.get_download_cache_dir(), 'git'))
+
+    def get_git_cache_dir(self, url, *parts):
+        """
+        Returns a stable cache directory for a git URL.
+        """
+        cache_name = hashlib.sha256(url.encode('utf-8')).hexdigest()
+        return join(self.get_git_cache_root(), *(parts + (cache_name,)))
+
+    def refresh_git_cache(self, url, cache_dir, extra_ref=None, fetch_tags=True):
+        """
+        Refresh a shallow git cache, optionally fetching a specific ref.
+        """
+        ensure_dir(dirname(cache_dir))
+        if isdir(cache_dir):
+            try:
+                with current_directory(cache_dir):
+                    sh.git('rev-parse', '--git-dir')
+            except Exception:
+                warning(
+                    'Removing invalid git cache at {}'.format(cache_dir))
+                rmdir(cache_dir)
+
+        if isdir(cache_dir):
+            with current_directory(cache_dir):
+                shprint(sh.git, 'remote', 'set-url', 'origin', url)
+                if fetch_tags or not extra_ref:
+                    fetch_args = ['fetch', '--depth', '1']
+                    if fetch_tags:
+                        fetch_args.append('--tags')
+                    fetch_args.append('origin')
+                    try:
+                        shprint(sh.git, *fetch_args)
+                    except Exception:
+                        warning(
+                            'Unable to refresh cached git URL {}; using existing cache at {}'
+                            .format(url, cache_dir))
+                if extra_ref:
+                    try:
+                        shprint(sh.git, 'fetch', '--depth', '1', 'origin', extra_ref)
+                    except Exception:
+                        warning(
+                            'Unable to fetch git ref {} for cached URL {}'
+                            .format(extra_ref, url))
+        else:
+            shprint(sh.git, 'clone', '--depth', '1', url, cache_dir)
+            if extra_ref:
+                with current_directory(cache_dir):
+                    try:
+                        shprint(sh.git, 'fetch', '--depth', '1', 'origin', extra_ref)
+                    except Exception:
+                        warning(
+                            'Unable to fetch git ref {} for cached URL {}'
+                            .format(extra_ref, url))
+
+    def cache_git_submodules(self):
+        """
+        Point git submodules at shallow local caches before updating them.
+        """
+        if not exists('.gitmodules'):
+            return
+
+        def strip_ansi(text):
+            return sub(
+                r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|\([A-Za-z0-9])',
+                '',
+                text)
+
+        def clean_git_url(text):
+            text = strip_ansi(text)
+            text = sub(r'[\x00-\x1f\x7f]', '', text)
+            return ''.join(text.split())
+
+        try:
+            submodule_urls = sh.git(
+                '-c', 'color.ui=false',
+                'config', '--file', '.gitmodules', '--get-regexp',
+                r'^submodule\..*\.url$')
+        except sh.ErrorReturnCode_1:
+            return
+
+        for line in submodule_urls.strip().splitlines():
+            line = strip_ansi(line).strip()
+            if not line:
+                continue
+
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                warning(
+                    'Skipping malformed submodule URL config line in {}: {}'
+                    .format(self.name, line))
+                continue
+
+            key, raw_url = parts
+            url = clean_git_url(raw_url)
+            if raw_url.strip() != url:
+                warning(
+                    'Sanitized submodule URL for {} in {}'
+                    .format(key, self.name))
+            if not url:
+                warning(
+                    'Skipping empty submodule URL config for {} in {}'
+                    .format(key, self.name))
+                continue
+
+            name = key[len('submodule.'):-len('.url')]
+            try:
+                path = sh.git(
+                    '-c', 'color.ui=false',
+                    'config', '--file', '.gitmodules', '--get',
+                    'submodule.{}.path'.format(name)).strip()
+            except sh.ErrorReturnCode_1:
+                warning(
+                    'Skipping submodule {} in {} because it has no path'
+                    .format(name, self.name))
+                continue
+
+            if url.startswith('./') or url.startswith('../'):
+                warning(
+                    'Skipping cache for relative submodule URL {} in {}'
+                    .format(url, self.name))
+                continue
+
+            commit = None
+            try:
+                tree_entry = sh.git(
+                    '-c', 'color.ui=false',
+                    'ls-tree', 'HEAD', path).strip()
+                if tree_entry:
+                    commit = tree_entry.split()[2]
+            except Exception:
+                pass
+
+            cache_dir = self.get_git_cache_dir(url, 'submodules')
+            self.refresh_git_cache(
+                url, cache_dir, extra_ref=commit, fetch_tags=False)
+            shprint(
+                sh.git, 'config', 'submodule.{}.url'.format(name),
+                'file://{}'.format(cache_dir))
+
     # Public Recipe API to be subclassed if needed
 
     def download_if_necessary(self):
@@ -414,14 +625,21 @@ class Recipe(metaclass=RecipeMeta):
             if expected_digest:
                 expected_digests[alg] = expected_digest
 
+        package_cache_dir = self.get_download_cache_dir()
+        ensure_dir(package_cache_dir)
         ensure_dir(join(self.ctx.packages_path, self.name))
 
         with current_directory(join(self.ctx.packages_path, self.name)):
             filename = shprint(sh.basename, url).stdout[:-1].decode('utf-8')
+            cached_filename = join(package_cache_dir, filename)
+            cached_marker_filename = join(
+                package_cache_dir, '.mark-{}'.format(filename))
 
             do_download = True
             marker_filename = '.mark-{}'.format(filename)
-            if exists(filename) and isfile(filename):
+            if exists(filename) and isdir(filename) and exists(marker_filename):
+                do_download = False
+            elif exists(filename) and isfile(filename):
                 if not exists(marker_filename):
                     shprint(sh.rm, filename)
                 else:
@@ -435,6 +653,23 @@ class Recipe(metaclass=RecipeMeta):
                             raise ValueError(
                                 ('Generated {0}sum does not match expected {0}sum '
                                  'for {1} recipe').format(alg, self.name))
+                    do_download = False
+            elif exists(cached_filename) and isfile(cached_filename):
+                if not exists(cached_marker_filename):
+                    shprint(sh.rm, cached_filename)
+                else:
+                    for alg, expected_digest in expected_digests.items():
+                        current_digest = algsum(alg, cached_filename)
+                        if current_digest != expected_digest:
+                            debug('* Generated {}sum: {}'.format(alg,
+                                                                 current_digest))
+                            debug('* Expected {}sum: {}'.format(alg,
+                                                                expected_digest))
+                            raise ValueError(
+                                ('Generated {0}sum does not match expected {0}sum '
+                                 'for {1} recipe').format(alg, self.name))
+                    shutil.copyfile(cached_filename, filename)
+                    shutil.copyfile(cached_marker_filename, marker_filename)
                     do_download = False
 
             # If we got this far, we will download
@@ -456,6 +691,8 @@ class Recipe(metaclass=RecipeMeta):
                             raise ValueError(
                                 ('Generated {0}sum does not match expected {0}sum '
                                  'for {1} recipe').format(alg, self.name))
+                    shutil.copyfile(filename, cached_filename)
+                    shutil.copyfile(marker_filename, cached_marker_filename)
             else:
                 info('{} download already cached, skipping'.format(self.name))
 
@@ -524,6 +761,19 @@ class Recipe(metaclass=RecipeMeta):
                                 join(extraction_filename, entry),
                                 directory_name)
                 else:
+                    parsed_url = urlparse(self.versioned_url)
+                    if parsed_url.scheme in ('git', 'git+file', 'git+ssh', 'git+http', 'git+https'):
+                        warning(
+                            '{} source directory is missing from the package cache; '
+                            'retrying download'.format(self.name))
+                        self.download()
+                        if isdir(extraction_filename):
+                            ensure_dir(directory_name)
+                            for entry in listdir(extraction_filename):
+                                shprint(sh.cp, '-R',
+                                        join(extraction_filename, entry),
+                                        directory_name)
+                            return
                     raise Exception(
                         'Given path is neither a file nor a directory: {}'
                         .format(extraction_filename))
@@ -1032,6 +1282,12 @@ class PythonRecipe(Recipe):
         env = environ.copy()
         env['PYTHONPATH'] = ''
         env['HOME'] = '/tmp'
+        env.setdefault(
+            'PIP_CACHE_DIR',
+            join(self.get_download_cache_dir(), 'pip'))
+        env.setdefault(
+            'PIP_INDEX_URL',
+            'https://pypi.tuna.tsinghua.edu.cn/simple')
         return env
 
     @property
@@ -1057,14 +1313,50 @@ class PythonRecipe(Recipe):
         if len(packages) == 0:
             return
 
+        deduped_packages = []
+        for package in packages:
+            if package not in deduped_packages:
+                deduped_packages.append(package)
+        packages = deduped_packages
+
+        pip_env = self.get_hostrecipe_env()
+        wheel_cache_dir = join(self.get_download_cache_dir(), 'pip', 'wheels')
+        ensure_dir(wheel_cache_dir)
+
+        download_options = [
+            "download",
+            *packages,
+            "--dest",
+            wheel_cache_dir,
+            "--only-binary=:all:",
+            "--prefer-binary",
+            "--retries",
+            "10",
+            "--timeout",
+            "60",
+            "-q",
+        ]
+        try:
+            shprint(self._host_recipe.pip, *download_options, _env=pip_env)
+        except Exception as e:
+            warning(
+                "Unable to pre-download hostpython prerequisites: {}"
+                .format(e))
+
         pip_options = [
             "install",
             *packages,
+            "--find-links",
+            wheel_cache_dir,
+            "--prefer-binary",
+            "--retries",
+            "10",
+            "--timeout",
+            "60",
             "-q",
         ]
         if force_upgrade:
             pip_options.append("--upgrade")
-        pip_env = self.get_hostrecipe_env()
         shprint(self._host_recipe.pip, *pip_options, _env=pip_env)
 
     def restore_hostpython_prerequisites(self, packages):

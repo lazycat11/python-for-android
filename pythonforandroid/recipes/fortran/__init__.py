@@ -45,15 +45,23 @@ class GFortranRecipe(Recipe):
         dir_name = self.get_dir_name()
         return join(self.ctx.build_dir, "other_builds", dir_name)
 
-    def get_fortran_dir(self):
-        toolchain_name = f"android-r{self.ndk_version}-api-{self.ctx.ndk_api}"
-        return join(
-            self.get_cache_dir(), f"{toolchain_name}-flang-v{self.toolchain_ver}"
-        )
+    def get_archive_cache_dir(self):
+        cache_name = f"android-r{self.ndk_version}-flang-v{self.toolchain_ver}"
+        return join(self.get_download_cache_dir(), self.name, cache_name)
 
-    def get_incomplete_files(self):
+    def get_toolchain_cache_dir(self):
+        cache_name = (
+            f"android-r{self.ndk_version}-api-{self.ctx.ndk_api}"
+            f"-flang-v{self.toolchain_ver}"
+        )
+        return join(self.get_download_cache_dir(), self.name, "toolchains", cache_name)
+
+    def get_fortran_dir(self):
+        return self.get_toolchain_cache_dir()
+
+    def get_incomplete_files(self, cache_dir=None):
         incomplete_files = []
-        cache_dir = self.get_cache_dir()
+        cache_dir = cache_dir or self.get_archive_cache_dir()
         for file, sha256sum in FLANG_FILES.items():
             _file = join(cache_dir, file)
             if not (os.path.exists(_file) and self.match_sha256(_file, sha256sum)):
@@ -63,11 +71,12 @@ class GFortranRecipe(Recipe):
     def download_if_necessary(self):
         assert self.ndk_version == "28c"
         if len(self.get_incomplete_files()) == 0:
+            info("{} download already cached, skipping".format(self.name))
             return
         self.download()
 
     def download(self):
-        cache_dir = self.get_cache_dir()
+        cache_dir = self.get_archive_cache_dir()
         ensure_dir(cache_dir)
         for file in self.get_incomplete_files():
             _file = join(cache_dir, file)
@@ -108,7 +117,7 @@ fi
         toolchain_path = Path(
             join(self.ctx.ndk_dir, "toolchains/llvm/prebuilt/linux-x86_64")
         )
-        cache_dir = Path(os.path.abspath(self.get_cache_dir()))
+        cache_dir = Path(os.path.abspath(self.get_archive_cache_dir()))
 
         # clean tmp folder
         tmp_folder = Path(os.path.abspath(f"{flang_folder}-tmp"))

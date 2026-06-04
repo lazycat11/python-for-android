@@ -32,7 +32,7 @@ class HostPython3Recipe(Recipe):
         :class:`~pythonforandroid.python.HostPythonRecipe`
     """
 
-    version = "3.14.2"
+    version = "3.11.9"
 
     url = "https://github.com/python/cpython/archive/refs/tags/v{version}.tar.gz"
     """The default url to download our host python recipe. This url will
@@ -87,7 +87,7 @@ class HostPython3Recipe(Recipe):
 
     def get_build_container_dir(self, arch=None):
         choices = self.check_recipe_choices()
-        dir_name = "-".join([self.name] + choices)
+        dir_name = "-".join([self.name, self.version] + choices)
         return join(self.ctx.build_dir, "other_builds", dir_name, "desktop")
 
     def get_build_dir(self, arch=None):
